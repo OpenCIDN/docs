@@ -1,0 +1,129 @@
+services:
+  minio:
+    image: m.daocloud.io/quay.io/minio/minio
+    entrypoint:
+    - sh
+    command:
+    - -c
+    - |-
+      (
+        while true; do
+            mc alias set local http://127.0.0.1:9000 minioadmin minioadmin && break
+            sleep 2
+        done
+
+        mc mb local/myminio
+      ) &
+      
+      /usr/bin/docker-entrypoint.sh server /data
+    ports:
+    - 9000:9000
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+
+  init-key:
+    image: m.daocloud.io/docker.io/alpine/openssl
+    container_name: init-key
+    restart: no
+    entrypoint:
+    - sh
+    command:
+    - -c
+    - |-
+      if [ -f /tmp/key/opencidn.key ] && [ -f /tmp/key/opencidn.pub ]; then
+          echo "Key files already exist, skipping generation"
+          exit 0
+      fi
+      openssl genrsa -out /tmp/key/opencidn.key 2048
+      openssl rsa -in /tmp/key/opencidn.key -pubout -out /tmp/key/opencidn.pub
+
+      # TODO: remove that convert to pkcs1
+      openssl rsa -in /tmp/key/opencidn.key -out /tmp/key/opencidn.key -traditional
+      openssl rsa -pubin -in /tmp/key/opencidn.pub -out /tmp/key/opencidn.pub -RSAPublicKey_out
+    volumes:
+    - ./key/:/tmp/key/
+
+  db-auth:
+    image: m.daocloud.io/docker.io/library/mysql:9.3.0
+    container_name: db-auth
+    restart: unless-stopped
+    ports:
+    - 3306:3306
+    environment:
+      MYSQL_ROOT_PASSWORD: example
+      MYSQL_DATABASE: auth
+
+  swaggerui-auth:
+    image: m.daocloud.io/docker.io/swaggerapi/swagger-ui:v5.18.2
+    container_name: swaggerui-auth
+    restart: unless-stopped
+    ports:
+    - 8000:8080
+    environment:
+      SWAGGER_JSON_URL: http://localhost:8081/swagger.json
+
+  auth:
+    image: m.daocloud.io/ghcr.io/opencidn/opencidn/auth:v0.0.9
+    container_name: auth
+    depends_on:
+      db-auth:
+        condition: service_started
+      init-key:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    ports:
+    - 8081:8081
+    command:
+    - --address=:8081
+    - --db-url
+    - root:example@tcp(db-auth:3306)/auth?charset=utf8mb4&parseTime=True
+    - --token-private-key-file
+    - /tmp/key/opencidn.key
+    - --blobs-url
+    - http://localhost:8090
+    volumes:
+    - ./key/:/tmp/key/:ro
+
+  gateway:
+    image: m.daocloud.io/ghcr.io/opencidn/opencidn/gateway:v0.0.9
+    container_name: gateway
+    depends_on:
+      minio:
+        condition: service_started
+    ports:
+    - 8080:8080
+    command:
+    - --address=:8080
+    - --default-registry
+    - docker.io
+    - --token-public-key-file
+    - /tmp/key/opencidn.pub
+    - --token-url
+    - http://localhost:8081/auth/token
+    - --storage-url
+    - local-minio://minioadmin:minioadmin@myminio.us-east-1?forcepathstyle=true&secure=false&chunksize=104857600&regionendpoint=http://localhost:9000
+    - --link-expires
+    - 1m
+    volumes:
+    - ./key/:/tmp/key/:ro
+
+  agent-1:
+    image: m.daocloud.io/ghcr.io/opencidn/opencidn/agent:v0.0.9
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_started
+    ports:
+    - 8090:8090
+    command:
+    - --address=:8090
+    - --token-public-key-file
+    - /tmp/key/opencidn.pub
+    - --storage-url
+    - local-minio://minioadmin:minioadmin@myminio.us-east-1?forcepathstyle=true&secure=false&chunksize=104857600&regionendpoint=http://localhost:9000
+    - --link-expires
+    - 1m
+    volumes:
+    - ./key/:/tmp/key/:ro

@@ -1,0 +1,48 @@
+services:
+  minio:
+    image: m.daocloud.io/quay.io/minio/minio
+    entrypoint:
+    - sh
+    command:
+    - -c
+    - |-
+      (
+        while true; do
+            mc alias set local http://127.0.0.1:9000 minioadmin minioadmin && break
+            sleep 2
+        done
+
+        mc mb local/myminio
+      ) &
+      
+      /usr/bin/docker-entrypoint.sh server /data
+    ports:
+    - 9000:9000
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+
+  gateway:
+    image: m.daocloud.io/ghcr.io/opencidn/opencidn/gateway:v0.0.9
+    container_name: gateway
+    depends_on:
+      minio:
+        condition: service_started
+    ports:
+    - 8080:8080
+    
+    # TODO:
+    # The current implementation of s3, sign and actual access must be consistent
+    # Support custom it for sign link
+    extra_hosts:
+    - localhost:host-gateway
+
+    command:
+    - --address=:8080
+    - --default-registry
+    - docker.io
+    - --storage-url
+    - local-minio://minioadmin:minioadmin@myminio.us-east-1?forcepathstyle=true&secure=false&chunksize=104857600&regionendpoint=http://localhost:9000
+    - --link-expires
+    - 1m

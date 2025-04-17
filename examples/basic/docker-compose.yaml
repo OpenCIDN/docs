@@ -1,0 +1,10 @@
+services:
+  gateway:
+    image: m.daocloud.io/ghcr.io/opencidn/opencidn/gateway:v0.0.9
+    container_name: gateway
+    ports:
+    - 8080:8080
+    command:
+    - --address=:8080
+    - --default-registry
+    - docker.io

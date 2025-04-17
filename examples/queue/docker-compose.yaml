@@ -1,0 +1,99 @@
+services:
+  minio:
+    image: m.daocloud.io/quay.io/minio/minio
+    entrypoint:
+    - sh
+    command:
+    - -c
+    - |-
+      (
+        while true; do
+            mc alias set local http://127.0.0.1:9000 minioadmin minioadmin && break
+            sleep 2
+        done
+
+        mc mb local/myminio
+      ) &
+      
+      /usr/bin/docker-entrypoint.sh server /data
+    ports:
+    - 9000:9000
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+
+  db-queue:
+    image: m.daocloud.io/docker.io/library/mysql:9.3.0
+    container_name: db-queue
+    restart: unless-stopped
+    ports:
+    - 3306:3306
+    environment:
+      MYSQL_ROOT_PASSWORD: example
+      MYSQL_DATABASE: queue
+
+  swaggerui-queue:
+    image: m.daocloud.io/docker.io/swaggerapi/swagger-ui:v5.18.2
+    container_name: swaggerui-queue
+    restart: unless-stopped
+    ports:
+    - 8000:8080
+    environment:
+      SWAGGER_JSON_URL: http://localhost:8082/swagger.json
+
+  gateway:
+    image: m.daocloud.io/ghcr.io/opencidn/opencidn/gateway:v0.0.9
+    container_name: gateway
+    depends_on:
+      minio:
+        condition: service_started
+    ports:
+    - 8080:8080
+    
+    # TODO:
+    # The current implementation of s3, sign and actual access must be consistent
+    # Support custom it for sign link
+    extra_hosts:
+    - localhost:host-gateway
+
+    command:
+    - --address=:8080
+    - --default-registry
+    - docker.io
+    - --storage-url
+    - local-minio://minioadmin:minioadmin@myminio.us-east-1?forcepathstyle=true&secure=false&chunksize=104857600&regionendpoint=http://localhost:9000
+    - --link-expires
+    - 1m
+    - --queue-url
+    - http://queue:8082/apis/v1
+    - --queue-token
+    - QUEUE_TOKEN
+
+  queue:
+    image: m.daocloud.io/ghcr.io/opencidn/opencidn/queue:v0.0.9
+    container_name: queue
+    restart: unless-stopped
+    depends_on:
+      db-queue:
+        condition: service_started
+    ports:
+    - 8082:8082
+    command:
+    - --address=:8082
+    - --db-url
+    - root:example@tcp(db-queue:3306)/queue?charset=utf8mb4&parseTime=True
+    - --admin-token
+    - QUEUE_TOKEN
+    - --allow-anonymous-read=true
+
+  runner-1:
+    image: m.daocloud.io/ghcr.io/opencidn/opencidn/runner:v0.0.9
+    restart: unless-stopped
+    command:
+    - --queue-url
+    - http://queue:8082/apis/v1
+    - --queue-token
+    - QUEUE_TOKEN
+    - --storage-url
+    - local-minio://minioadmin:minioadmin@myminio.us-east-1?forcepathstyle=true&secure=false&chunksize=104857600&regionendpoint=http://localhost:9000
